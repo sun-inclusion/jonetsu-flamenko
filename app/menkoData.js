@@ -1,5 +1,5 @@
 // app/menkoData.js
-// 『情熱のフラ・メンコ』全100種キモカワ動物メンコ＆CPU対戦データ
+// 『情熱のフラ・メンコ』全100種キモカワ動物メンコ＆CPU＆全5章ストーリーデータ
 
 export const TRIBES = [
   { id: 'flamingo', name: 'フラミンゴ', baseColor: '#f472b6', subColor: '#fbcfe8', eye: 'sharp', mouth: 'beak', trait: '曲がりすぎたクチバシ' },
@@ -39,7 +39,6 @@ export const MENKO_LIST = [];
 TRIBES.forEach((tribe, tIdx) => {
   STAGES.forEach((st, sIdx) => {
     const id = tIdx * 10 + sIdx + 1;
-    // Lv10のフラミンゴは特別仕様（丸メン・最強カルメン）
     const isCarmen = id === 10;
     const shape = isCarmen ? 'round' : st.shape;
     const name = isCarmen
@@ -56,8 +55,8 @@ TRIBES.forEach((tribe, tIdx) => {
       tribeId: tribe.id,
       tribeName: tribe.name,
       lv: st.lv,
-      shape, // 'round' | 'square'
-      rarity: st.rarity, // 'N' | 'R' | 'SR' | 'UR'
+      shape,
+      rarity: st.rarity,
       baseColor: tribe.baseColor,
       subColor: tribe.subColor,
       eye: tribe.eye,
@@ -85,4 +84,63 @@ export const CPU_RIVALS = [
   { id: 6, name: '謎のUMAハンター', title: '未確認生物マニア', deck: [94, 96, 99], reward: 450, aiAccuracy: 0.80, desc: '三つ目のUMAメンコが並ぶ不気味なデッキ。' },
   { id: 7, name: '情熱の闘牛士ホセ', title: '本場スペインからの刺客', deck: [19, 29, 69], reward: 550, aiAccuracy: 0.85, desc: 'Lv9「情熱の」シリーズ揃い踏み！一撃の威力が桁違いや。' },
   { id: 8, name: 'フラメンコ師範・カルロス', title: '伝説の舞姫使い', deck: [10, 60, 100], reward: 800, aiAccuracy: 0.92, desc: '最強UR「カルメン・フラミンゴ」を含む最終決戦デッキ！' },
+];
+
+// 「フラ」を掛けた全5章ストーリー（全15ステージ）
+export const STORY_CHAPTERS = [
+  {
+    ch: 1,
+    title: '第1章：フラッと昭和の路地裏',
+    subtitle: '基本の1枚タイマン修行',
+    gimmickLabel: '通常ルール（1枚タイマン）',
+    stages: [
+      { id: '1-1', name: '1-1 路地裏のタカシ', mode: 'single', rivalId: 1, enemyDeck: [1], gimmick: 'none', rewardCoins: 120, bonusMenkoId: 2, desc: '夕焼けの空き地でメンコ勝負！まずは丸メンをひっくり返せ！' },
+      { id: '1-2', name: '1-2 ガキ大将・ゴリ太', mode: 'single', rivalId: 1, enemyDeck: [52], gimmick: 'none', rewardCoins: 150, bonusMenkoId: 54, desc: '重めのゴリラメンコが登場。赤芯の「バチコーンッ！！」で飛ばせ！' },
+      { id: '1-3', name: '1-3 駄菓子屋のトメさん', mode: 'single', rivalId: 2, enemyDeck: [4], gimmick: 'intruder', intruderId: 6, rewardCoins: 220, bonusMenkoId: 6, desc: '【章ボス】角メン使いの老婆！途中「フラッと乱入」するレア札も狙え！' },
+    ],
+  },
+  {
+    ch: 2,
+    title: '第2章：フラフラ酔っ払い横丁',
+    subtitle: '照準が揺れる千鳥足ステージ',
+    gimmickLabel: '特殊：照準が左右にフラフラ揺れる！',
+    stages: [
+      { id: '2-1', name: '2-1 千鳥足の田中さん', mode: 'single', rivalId: 2, enemyDeck: [14], gimmick: 'wobble', rewardCoins: 240, bonusMenkoId: 15, desc: '横丁の熱気で照準がフラフラ揺れる！タイミングを見極めろ！' },
+      { id: '2-2', name: '2-2 ニヤケ顔のケンジ', mode: 'single', rivalId: 3, enemyDeck: [75], gimmick: 'wobble', rewardCoins: 280, bonusMenkoId: 76, desc: '揺れる照準で伊達男カワウソを狙い撃て！' },
+      { id: '2-3', name: '2-3 哀愁の課長・佐藤', mode: 'single', rivalId: 4, enemyDeck: [55], gimmick: 'wobble_intruder', intruderId: 57, rewardCoins: 350, bonusMenkoId: 57, desc: '【章ボス】酔いどれ課長の重厚ゴリラ角メン！乱入SRも出現！' },
+    ],
+  },
+  {
+    ch: 3,
+    title: '第3章：フラッシュ輝く太陽堂',
+    subtitle: '累積バトル＆現地調達解禁',
+    gimmickLabel: '特殊：複数枚累積バトル（2〜3枚戦）',
+    stages: [
+      { id: '3-1', name: '3-1 太陽堂の常連トリオ', mode: 'cumulative', handLimit: 2, rivalId: 3, enemyDeck: [24, 34], gimmick: 'none', rewardCoins: 380, bonusMenkoId: 26, desc: 'ここから累積バトル！裏返した相手メンコをその場で手札にして使え！' },
+      { id: '3-2', name: '3-2 パンダ大好き少年', mode: 'cumulative', handLimit: 3, rivalId: 4, enemyDeck: [83, 85, 86], gimmick: 'intruder', intruderId: 87, rewardCoins: 420, bonusMenkoId: 87, desc: 'パンダ3連星との累積戦！薔薇噛みパンダがフラッと乱入するぞ！' },
+      { id: '3-3', name: '3-3 謎のUMAハンター', mode: 'cumulative', handLimit: 3, rivalId: 6, enemyDeck: [94, 96, 98], gimmick: 'intruder', intruderId: 99, rewardCoins: 500, bonusMenkoId: 99, desc: '【章ボス】三つ目UMA軍団との総力奪い合い！' },
+    ],
+  },
+  {
+    ch: 4,
+    title: '第4章：フラダンス＆フラメンコ酒場',
+    subtitle: '情熱の風圧1.5倍ヒートステージ',
+    gimmickLabel: '特殊：お互いの風圧範囲1.5倍！',
+    stages: [
+      { id: '4-1', name: '4-1 南国のフラガール', mode: 'single', rivalId: 5, enemyDeck: [7], gimmick: 'high_wind', rewardCoins: 520, bonusMenkoId: 8, desc: '南国の情熱風で風圧が1.5倍！一撃で吹っ飛ぶ超ハイスピード戦！' },
+      { id: '4-2', name: '4-2 踊るセニョリータ美咲', mode: 'cumulative', handLimit: 3, rivalId: 5, enemyDeck: [7, 37, 87], gimmick: 'high_wind', rewardCoins: 580, bonusMenkoId: 9, desc: 'SR薔薇噛み軍団と風圧1.5倍の累積バトル！' },
+      { id: '4-3', name: '4-3 情熱の闘牛士ホセ', mode: 'cumulative', handLimit: 4, rivalId: 7, enemyDeck: [19, 29, 69], gimmick: 'high_wind_intruder', intruderId: 49, rewardCoins: 680, bonusMenkoId: 49, desc: '【章ボス】Lv9情熱シリーズ勢揃い！激しい風圧戦を制せ！' },
+    ],
+  },
+  {
+    ch: 5,
+    title: '第5章：フラッグを奪え！フラミンゴ城',
+    subtitle: '伝説の舞姫カルメン最終決戦',
+    gimmickLabel: '最終決戦：全ギミック複合バトル',
+    stages: [
+      { id: '5-1', name: '5-1 近衛騎士ハシビロン', mode: 'single', rivalId: 7, enemyDeck: [70], gimmick: 'wobble', rewardCoins: 750, bonusMenkoId: 70, desc: 'URハシビロコウとの一騎打ち！瞬き厳禁のタイマン勝負！' },
+      { id: '5-2', name: '5-2 四天王・乱れ打ち軍団', mode: 'cumulative', handLimit: 4, rivalId: 8, enemyDeck: [60, 80, 90, 100], gimmick: 'high_wind', rewardCoins: 850, bonusMenkoId: 100, desc: 'UR4体が立ちはだかる累積戦！奪ったURを即戦力にして押し切れ！' },
+      { id: '5-3', name: '5-3 師範カルロス＆カルメン', mode: 'cumulative', handLimit: 5, rivalId: 8, enemyDeck: [10, 20, 30, 60, 100], gimmick: 'high_wind_intruder', intruderId: 10, rewardCoins: 1500, bonusMenkoId: 10, desc: '【最終決戦】最強UR「情熱のカルメン・フラミンゴ」を奪い取り、メンコ王になれ！' },
+    ],
+  },
 ];
