@@ -6,6 +6,9 @@ import { MenkoSVG, drawMenkoCanvas } from './graphics';
 
 const STORAGE_KEY = 'jonetsu_flamenko_save_v3';
 
+// 全15ステージのフラット順序リスト（順次解放判定用）
+const ALL_STORY_STAGES = STORY_CHAPTERS.flatMap((c) => c.stages);
+
 // 10段階の打撃ランク定義（Lv10が最強〜Lv1が最弱）
 const SLAM_RANKS = [
   { lv: 1, text: 'スカッ…', color: '#94a3b8', stroke: '#334155', scale: 0.75, shake: 0, freq: 95, gain: 0.12 },
@@ -110,7 +113,7 @@ export default function FlamenkoGame() {
   const [screen, setScreen] = useState('home');
   const [homeTab, setHomeTab] = useState('story'); // 'story' | 'free'
   const [selectedChapter, setSelectedChapter] = useState(1);
-  const [activeStoryStage, setActiveStoryStage] = useState(null); // ストーリー挑戦中のステージオブジェクト
+  const [activeStoryStage, setActiveStoryStage] = useState(null);
 
   // フリー対戦設定
   const [selectedRivalId, setSelectedRivalId] = useState(1);
@@ -118,10 +121,10 @@ export default function FlamenkoGame() {
   const [selectedHand, setSelectedHand] = useState([]);
 
   // 先攻後攻決定ステート
-  const [turnDecideType, setTurnDecideType] = useState('rps'); // 'rps'(ジャンケン) | 'coin'(コイントス) | 'roulette'(自動ルーレット)
+  const [turnDecideType, setTurnDecideType] = useState('rps');
   const [rouletteSpinning, setRouletteSpinning] = useState(false);
   const [rouletteDisplay, setRouletteDisplay] = useState('？');
-  const [turnResultBanner, setTurnResultBanner] = useState(null); // { first: 'player'|'cpu', detail: string }
+  const [turnResultBanner, setTurnResultBanner] = useState(null);
 
   const [isDebug, setIsDebug] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -141,7 +144,7 @@ export default function FlamenkoGame() {
   const animFrameRef = useRef(null);
 
   const [battleState, setBattleState] = useState({
-    turn: 'player', // 'player' | 'animating' | 'cpu' | 'result'
+    turn: 'player',
     message: '狙う場所をタップして叩きつけろ！',
     aimX: 170,
     aimY: 155,
@@ -156,6 +159,27 @@ export default function FlamenkoGame() {
 
   const totalOwnedCount = Object.values(inventory).reduce((sum, c) => sum + (c > 0 ? c : 0), 0);
   const uniqueOwnedCount = Object.values(inventory).filter((c) => c > 0).length;
+
+  // ステージ順次解放判定関数（最初は1-1のみ解放、以降は直前のステージがクリア済みなら解放）
+  const isStageUnlocked = useCallback(
+    (stageId) => {
+      const idx = ALL_STORY_STAGES.findIndex((s) => s.id === stageId);
+      if (idx <= 0) return true;
+      const prevStage = ALL_STORY_STAGES[idx - 1];
+      return clearedStages.includes(prevStage.id);
+    },
+    [clearedStages]
+  );
+
+  // 章解放判定（その章の最初のステージが解放されているか）
+  const isChapterUnlocked = useCallback(
+    (chNum) => {
+      const chObj = STORY_CHAPTERS.find((c) => c.ch === chNum);
+      if (!chObj || chObj.stages.length === 0) return false;
+      return isStageUnlocked(chObj.stages[0].id);
+    },
+    [isStageUnlocked]
+  );
 
   // 初期ロード
   useEffect(() => {
@@ -174,7 +198,15 @@ export default function FlamenkoGame() {
           }
           if (typeof parsed.coins === 'number') setCoins(parsed.coins);
           if (typeof parsed.wins === 'number') setWins(parsed.wins);
-          if (Array.isArray(parsed.clearedStages)) setClearedStages(parsed.clearedStages);
+          if (Array.isArray(parsed.clearedStages)) {
+            setClearedStages(parsed.clearedStages);
+            // 現在挑戦中の最新章を自動選択
+            const nextStage = ALL_STORY_STAGES.find((s) => !parsed.clearedStages.includes(s.id));
+            if (nextStage) {
+              const chNum = Number(nextStage.id.split('-')[0]);
+              if (chNum >= 1 && chNum <= 5) setSelectedChapter(chNum);
+            }
+          }
         }
       } catch (e) {}
     }
@@ -208,11 +240,11 @@ export default function FlamenkoGame() {
     return cleaned;
   }, []);
 
-  // ストーリーステージ選択開始
+  // ストーリーステージ選択開始（未解放ステージはブロック）
   const startStoryStageSetup = (stage) => {
+    if (!isStageUnlocked(stage.id)) return;
     setActiveStoryStage(stage);
     setSelectedRivalId(stage.rivalId);
-    // 累積ステージでもプレイヤー所持が1枚なら自動調整
     const effectiveMode = stage.mode === 'cumulative' && totalOwnedCount >= 2 ? 'cumulative' : 'single';
     setBattleMode(effectiveMode);
     setSelectedHand([]);
@@ -228,7 +260,6 @@ export default function FlamenkoGame() {
     setScreen('select_hand');
   };
 
-  // 手札の選択上限
   const getHandLimit = () => {
     if (battleMode === 'single') return 1;
     if (activeStoryStage && activeStoryStage.handLimit) {
@@ -252,7 +283,6 @@ export default function FlamenkoGame() {
     setSelectedHand(selectedHand.filter((_, i) => i !== index));
   };
 
-  // 先攻・後攻決定画面へ進む
   const proceedToTurnDecide = () => {
     const minReq = battleMode === 'single' ? 1 : 2;
     if (selectedHand.length < minReq) return;
@@ -262,7 +292,6 @@ export default function FlamenkoGame() {
     setScreen('turn_decide');
   };
 
-  // ジャンケン実行（ルーレット回転演出付き）
   const playRpsChoice = (playerChoice) => {
     if (rouletteSpinning) return;
     setRouletteSpinning(true);
@@ -298,7 +327,6 @@ export default function FlamenkoGame() {
     }, 65);
   };
 
-  // メンコ裏表コイントス実行
   const playCoinChoice = (guessFront) => {
     if (rouletteSpinning) return;
     setRouletteSpinning(true);
@@ -326,7 +354,6 @@ export default function FlamenkoGame() {
     }, 65);
   };
 
-  // 自動ルーレット方式実行
   const playAutoRoulette = () => {
     if (rouletteSpinning) return;
     setRouletteSpinning(true);
@@ -350,14 +377,12 @@ export default function FlamenkoGame() {
     }, 60);
   };
 
-  // 10段階の打撃ランク算出
   const calcSlamRank = (accuracyRatio, menko) => {
     const rawScore = accuracyRatio * 8 + (menko.power / 100) * 2;
     const idx = Math.max(0, Math.min(9, Math.round(rawScore) - 1));
     return SLAM_RANKS[idx];
   };
 
-  // メンコ叩きつけ実行処理（プレイヤー・CPU共通）
   const executeSlam = useCallback(
     (attackerOwner, menko, targetX, targetY, accuracyRatio, isCumulative) => {
       const rankObj = calcSlamRank(accuracyRatio, menko);
@@ -445,7 +470,7 @@ export default function FlamenkoGame() {
     [muted, activeStoryStage]
   );
 
-  // 試合終了＆リアル精算
+  // 試合終了＆リアル精算（クリア時は次章タブへ自動フォーカス）
   const concludeMatch = useCallback(
     (finalCapturedByPlayer, finalCapturedByCpu, isVictory) => {
       const rival = CPU_RIVALS.find((r) => r.id === selectedRivalId) || CPU_RIVALS[0];
@@ -461,6 +486,7 @@ export default function FlamenkoGame() {
       let rewardCoins = 0;
       let storyBonusMenko = null;
       let nextCleared = [...clearedStages];
+      let nextStageUnlockedMsg = null;
 
       if (isVictory) {
         if (activeStoryStage) {
@@ -472,6 +498,18 @@ export default function FlamenkoGame() {
               const bId = activeStoryStage.bonusMenkoId;
               nextInv[bId] = (nextInv[bId] || 0) + 1;
               storyBonusMenko = MENKO_LIST.find((m) => m.id === bId);
+            }
+            // 次のステージ解放案内
+            const curIdx = ALL_STORY_STAGES.findIndex((s) => s.id === activeStoryStage.id);
+            if (curIdx >= 0 && curIdx + 1 < ALL_STORY_STAGES.length) {
+              const nextSt = ALL_STORY_STAGES[curIdx + 1];
+              nextStageUnlockedMsg = `🔓 新ステージ「${nextSt.name}」が解放されたで！`;
+              const nextCh = Number(nextSt.id.split('-')[0]);
+              if (nextCh >= 1 && nextCh <= 5) {
+                setSelectedChapter(nextCh);
+              }
+            } else if (curIdx === ALL_STORY_STAGES.length - 1) {
+              nextStageUnlockedMsg = '👑 全5章・全15ステージ完全制覇おめでとう！！';
             }
           }
         } else {
@@ -507,6 +545,7 @@ export default function FlamenkoGame() {
           lost: finalCapturedByCpu.map((id) => MENKO_LIST.find((m) => m.id === id)).filter(Boolean),
           rewardCoins,
           storyBonusMenko,
+          nextStageUnlockedMsg,
           wasWipedOut,
         },
       }));
@@ -514,7 +553,7 @@ export default function FlamenkoGame() {
     [selectedRivalId, inventory, coins, wins, clearedStages, activeStoryStage, saveProgress, muted, battleMode]
   );
 
-  // CPUの1手実行ロジック（後攻スタート時・プレイヤー手番後の両方で呼び出す）
+  // CPUの1手実行ロジック
   const runCpuTurn = useCallback(
     (isCum, currentPlayerQueue, currentCpuQueue, currentCapPly, currentCapCpu) => {
       setBattleState((prev) => ({
@@ -608,7 +647,6 @@ export default function FlamenkoGame() {
             return;
           }
 
-          // ストーリー「フラッと乱入」ギミック判定
           if (
             activeStoryStage &&
             !intruderSpawnedRef.current &&
@@ -766,7 +804,6 @@ export default function FlamenkoGame() {
     const diffFromCenter = Math.abs(50 - battleState.gaugeVal);
     const accuracy = Math.max(0.1, 1 - diffFromCenter / 50);
 
-    // フラフラ照準ギミック時は揺れ分を加算した位置へ着弾
     const isWobble =
       activeStoryStage &&
       (activeStoryStage.gimmick === 'wobble' || activeStoryStage.gimmick === 'wobble_intruder');
@@ -1154,9 +1191,9 @@ export default function FlamenkoGame() {
                 </div>
                 <div style={{ fontSize: '11.5px', color: '#431407' }}>
                   <div style={{ fontWeight: '900', color: '#c2410c', marginBottom: '2px' }}>
-                    フラッと始まる情熱の奪い合い！
+                    1-1から順番に勝ち上がれ！情熱メンコ道！
                   </div>
-                  ジャンケン＆ルーレットで先攻を奪い、全5章の猛者からキモカワ動物メンコを「ゲットだぜ！」
+                  ステージを1つずつクリアして次の強敵を解放！キモカワ動物メンコを「ゲットだぜ！」
                 </div>
               </div>
 
@@ -1192,12 +1229,13 @@ export default function FlamenkoGame() {
                 </button>
               </div>
 
-              {/* ストーリーモードUI */}
+              {/* ストーリーモードUI（順次解放方式） */}
               {homeTab === 'story' ? (
                 <div style={{ marginBottom: '10px' }}>
                   {/* 5章アイコンタブ */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px', marginBottom: '8px' }}>
                     {STORY_CHAPTERS.map((c) => {
+                      const chUnlocked = isChapterUnlocked(c.ch);
                       const chClearedCount = c.stages.filter((s) => clearedStages.includes(s.id)).length;
                       const active = selectedChapter === c.ch;
                       return (
@@ -1207,14 +1245,14 @@ export default function FlamenkoGame() {
                           style={{
                             padding: '6px 2px',
                             borderRadius: '8px',
-                            backgroundColor: active ? '#ea580c' : '#fff7ed',
-                            color: active ? '#fff' : '#9a3412',
-                            border: active ? '2px solid #9a3412' : '1px solid #fdba74',
+                            backgroundColor: active ? '#ea580c' : chUnlocked ? '#fff7ed' : '#e2e8f0',
+                            color: active ? '#fff' : chUnlocked ? '#9a3412' : '#64748b',
+                            border: active ? '2px solid #9a3412' : '1px solid #cbd5e1',
                             fontSize: '11px',
                             fontWeight: '900',
                           }}
                         >
-                          第{c.ch}章
+                          {chUnlocked ? `第${c.ch}章` : `🔒第${c.ch}章`}
                           <div style={{ fontSize: '9px', opacity: 0.9 }}>
                             {chClearedCount === 3 ? '👑済' : `${chClearedCount}/3`}
                           </div>
@@ -1241,17 +1279,45 @@ export default function FlamenkoGame() {
                     </div>
                   </div>
 
-                  {/* 章内3ステージ一覧 */}
+                  {/* 章内3ステージ一覧（未解放はロック表示） */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {currentChapterObj.stages.map((st) => {
+                      const unlocked = isStageUnlocked(st.id);
                       const isCleared = clearedStages.includes(st.id);
                       const bonusM = MENKO_LIST.find((m) => m.id === st.bonusMenkoId);
+
+                      if (!unlocked) {
+                        return (
+                          <div
+                            key={st.id}
+                            style={{
+                              backgroundColor: '#f1f5f9',
+                              border: '2px dashed #cbd5e1',
+                              borderRadius: '10px',
+                              padding: '10px',
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              color: '#64748b',
+                            }}
+                          >
+                            <div>
+                              <div style={{ fontSize: '12px', fontWeight: '900' }}>🔒 {st.name}</div>
+                              <div style={{ fontSize: '10.5px' }}>前のステージをクリアすると解放されるで！</div>
+                            </div>
+                            <span style={{ fontSize: '11px', fontWeight: '900', padding: '6px 10px', backgroundColor: '#e2e8f0', borderRadius: '6px' }}>
+                              未解放
+                            </span>
+                          </div>
+                        );
+                      }
+
                       return (
                         <div
                           key={st.id}
                           style={{
                             backgroundColor: isCleared ? '#f0fdf4' : '#ffffff',
-                            border: isCleared ? '2px solid #86efac' : '2px solid #cbd5e1',
+                            border: isCleared ? '2px solid #86efac' : '2px solid #f97316',
                             borderRadius: '10px',
                             padding: '8px 10px',
                             display: 'flex',
@@ -1275,16 +1341,16 @@ export default function FlamenkoGame() {
                             onClick={() => startStoryStageSetup(st)}
                             style={{
                               flexShrink: 0,
-                              backgroundColor: '#ea580c',
+                              backgroundColor: isCleared ? '#0d9488' : '#ea580c',
                               color: '#fff',
                               fontSize: '12px',
                               fontWeight: '900',
                               padding: '9px 12px',
                               borderRadius: '8px',
-                              boxShadow: '0 3px 0 #9a3412',
+                              boxShadow: isCleared ? '0 3px 0 #115e59' : '0 3px 0 #9a3412',
                             }}
                           >
-                            挑む！
+                            {isCleared ? '再戦！' : '挑む！'}
                           </button>
                         </div>
                       );
@@ -1571,7 +1637,7 @@ export default function FlamenkoGame() {
             </div>
           )}
 
-          {/* ================= 先攻・後攻決定画面（選択方式＆ルーレット方式） ================= */}
+          {/* ================= 先攻・後攻決定画面 ================= */}
           {screen === 'turn_decide' && (
             <div style={{ padding: '14px', textAlign: 'center' }}>
               <div style={{ fontSize: '16px', fontWeight: '900', color: '#dc2626', marginBottom: '4px' }}>
@@ -1581,7 +1647,6 @@ export default function FlamenkoGame() {
                 決め方を「選択方式」か「自動ルーレット方式」から選んでな！
               </div>
 
-              {/* 決め方タブ（3種） */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '5px', marginBottom: '12px' }}>
                 <button
                   disabled={rouletteSpinning}
@@ -1639,7 +1704,6 @@ export default function FlamenkoGame() {
                 </button>
               </div>
 
-              {/* ルーレット演出モニター */}
               <div
                 style={{
                   backgroundColor: '#1e293b',
@@ -1655,7 +1719,6 @@ export default function FlamenkoGame() {
                 {rouletteDisplay}
               </div>
 
-              {/* 方式ごとの操作ボタン */}
               {(!turnResultBanner || turnResultBanner.first === null) && (
                 <div style={{ marginBottom: '12px' }}>
                   {turnDecideType === 'rps' && (
@@ -1724,7 +1787,6 @@ export default function FlamenkoGame() {
                 </div>
               )}
 
-              {/* 結果バナー＆試合開始ボタン */}
               {turnResultBanner && (
                 <div
                   style={{
@@ -1801,7 +1863,6 @@ export default function FlamenkoGame() {
                 <span style={{ color: '#16a34a' }}>確保: {battleState.capturedByPlayer.length}枚</span>
               </div>
 
-              {/* メンコ土俵Canvas */}
               <div style={{ position: 'relative', textAlign: 'center', marginBottom: '8px' }}>
                 <canvas
                   ref={canvasRef}
@@ -1940,6 +2001,11 @@ export default function FlamenkoGame() {
                           👑 初回クリア特典「{battleState.resultSummary.storyBonusMenko.name}」ゲットだぜ！
                         </div>
                       )}
+                      {battleState.resultSummary.nextStageUnlockedMsg && (
+                        <div style={{ fontWeight: '900', color: '#2563eb', marginTop: '2px' }}>
+                          {battleState.resultSummary.nextStageUnlockedMsg}
+                        </div>
+                      )}
                       <div style={{ fontWeight: '900', color: '#dc2626', marginTop: '2px' }}>
                         奪われたメンコ: {battleState.resultSummary.lost.length}枚
                         {battleState.resultSummary.lost.length > 0 &&
@@ -1980,7 +2046,7 @@ export default function FlamenkoGame() {
                         borderRadius: '10px',
                       }}
                     >
-                      ホームへ戻る
+                      次へ進む（ホーム）
                     </button>
                   </div>
                 </div>
@@ -2215,6 +2281,16 @@ export default function FlamenkoGame() {
                 </button>
                 <button
                   onClick={() => {
+                    const allIds = ALL_STORY_STAGES.map((s) => s.id);
+                    setClearedStages(allIds);
+                    saveProgress(inventory, coins, wins, allIds);
+                  }}
+                  style={{ backgroundColor: '#7c3aed', color: '#fff', padding: '4px 8px', borderRadius: '4px' }}
+                >
+                  全15ステージ解放
+                </button>
+                <button
+                  onClick={() => {
                     localStorage.removeItem(STORAGE_KEY);
                     window.location.reload();
                   }}
@@ -2258,8 +2334,8 @@ export default function FlamenkoGame() {
               🔥 情熱のフラ・メンコ 遊び方
             </div>
             <ul style={{ fontSize: '12px', paddingLeft: '18px', lineHeight: '1.7', marginBottom: '12px' }}>
-              <li><b>① 先攻・後攻決定</b>：ジャンケン・表裏予想の「選択方式」か「おまかせルーレット」で先攻を奪え！</li>
-              <li><b>② 全5章ストーリー</b>：フラフラ揺れる照準や風圧1.5倍、野良レアの「フラッと乱入」を制して全15ステージ制覇を目指せ！</li>
+              <li><b>① 1-1から順次攻略</b>：ストーリーは1ステージずつクリアすることで次の相手や章が解放されるで！</li>
+              <li><b>② 先攻・後攻決定</b>：ジャンケン・表裏予想の「選択方式」か「おまかせルーレット」で先攻を奪え！</li>
               <li><b>③ 奪い合い＆現地調達</b>：1枚タイマンは勝てば即「ゲットだぜ！」。累積バトルは途中で奪ったメンコが即手札に入りその場で使えるで！</li>
             </ul>
             <button
