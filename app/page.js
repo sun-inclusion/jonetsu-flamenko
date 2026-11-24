@@ -5,8 +5,6 @@ import { MENKO_LIST, CPU_RIVALS, TRIBES, STORY_CHAPTERS } from './menkoData';
 import { MenkoSVG, drawMenkoCanvas } from './graphics';
 
 const STORAGE_KEY = 'jonetsu_flamenko_save_v3';
-
-// 全15ステージのフラット順序リスト（順次解放判定用）
 const ALL_STORY_STAGES = STORY_CHAPTERS.flatMap((c) => c.stages);
 
 // 10段階の打撃ランク定義（Lv10が最強〜Lv1が最弱）
@@ -23,8 +21,7 @@ const SLAM_RANKS = [
   { lv: 10, text: 'バチコーンッ！！', color: '#ffffff', stroke: '#dc2626', scale: 1.9, shake: 25, freq: 370, gain: 0.72 },
 ];
 
-// 10段階対応 Web Audio API 効果音エンジン
-function playSlamSe(rankObj, muted) {
+function playSlamSe(rankObj, isCritical, muted) {
   if (muted || typeof window === 'undefined') return;
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -34,28 +31,28 @@ function playSlamSe(rankObj, muted) {
 
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = rankObj.lv >= 7 ? 'sawtooth' : 'triangle';
-    osc.frequency.setValueAtTime(rankObj.freq, now);
-    osc.frequency.exponentialRampToValueAtTime(34, now + 0.14 + rankObj.lv * 0.015);
-    gain.gain.setValueAtTime(rankObj.gain, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.16 + rankObj.lv * 0.015);
+    osc.type = rankObj.lv >= 7 || isCritical ? 'sawtooth' : 'triangle';
+    osc.frequency.setValueAtTime(isCritical ? 460 : rankObj.freq, now);
+    osc.frequency.exponentialRampToValueAtTime(30, now + 0.16 + rankObj.lv * 0.015);
+    gain.gain.setValueAtTime(isCritical ? 0.8 : rankObj.gain, now);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.18 + rankObj.lv * 0.015);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(now);
-    osc.stop(now + 0.18 + rankObj.lv * 0.015);
+    osc.stop(now + 0.2 + rankObj.lv * 0.015);
 
-    if (rankObj.lv >= 6) {
+    if (rankObj.lv >= 6 || isCritical) {
       const osc2 = ctx.createOscillator();
       const gain2 = ctx.createGain();
       osc2.type = 'square';
-      osc2.frequency.setValueAtTime(520 + rankObj.lv * 65, now);
-      osc2.frequency.exponentialRampToValueAtTime(110, now + 0.09);
-      gain2.gain.setValueAtTime(rankObj.gain * 0.55, now);
-      gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+      osc2.frequency.setValueAtTime(isCritical ? 1200 : 520 + rankObj.lv * 65, now);
+      osc2.frequency.exponentialRampToValueAtTime(95, now + 0.11);
+      gain2.gain.setValueAtTime((isCritical ? 0.8 : rankObj.gain) * 0.55, now);
+      gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
       osc2.connect(gain2);
       gain2.connect(ctx.destination);
       osc2.start(now);
-      osc2.stop(now + 0.11);
+      osc2.stop(now + 0.13);
     }
   } catch (e) {}
 }
@@ -102,28 +99,27 @@ function playSimpleSe(type, muted) {
 }
 
 export default function FlamenkoGame() {
-  // セーブ状態
   const [inventory, setInventory] = useState({ 1: 1, 11: 1, 21: 1 });
   const [coins, setCoins] = useState(200);
   const [wins, setWins] = useState(0);
   const [clearedStages, setClearedStages] = useState([]);
   const [muted, setMuted] = useState(false);
 
-  // 画面ナビゲーション: 'home' | 'select_hand' | 'turn_decide' | 'battle' | 'gacha' | 'dex'
   const [screen, setScreen] = useState('home');
-  const [homeTab, setHomeTab] = useState('story'); // 'story' | 'free'
+  const [homeTab, setHomeTab] = useState('story');
   const [selectedChapter, setSelectedChapter] = useState(1);
   const [activeStoryStage, setActiveStoryStage] = useState(null);
 
-  // フリー対戦設定
   const [selectedRivalId, setSelectedRivalId] = useState(1);
-  const [battleMode, setBattleMode] = useState('single'); // 'single' | 'cumulative'
+  const [battleMode, setBattleMode] = useState('single');
   const [selectedHand, setSelectedHand] = useState([]);
 
-  // 先攻後攻決定ステート
+  // 先攻後攻決定（相手メンコの絵＋表裏アニメーション付き）
   const [turnDecideType, setTurnDecideType] = useState('rps');
   const [rouletteSpinning, setRouletteSpinning] = useState(false);
   const [rouletteDisplay, setRouletteDisplay] = useState('？');
+  const [rouletteMenko, setRouletteMenko] = useState(null);
+  const [rouletteFlipped, setRouletteFlipped] = useState(false);
   const [turnResultBanner, setTurnResultBanner] = useState(null);
 
   const [isDebug, setIsDebug] = useState(false);
@@ -150,9 +146,9 @@ export default function FlamenkoGame() {
     aimY: 155,
     gaugeVal: 50,
     gaugeDir: 1,
-    playerQueue: [],
-    cpuQueue: [],
-    capturedByPlayer: [],
+    playerQueue: [], // プレイヤーの残り手札ID（長さ＝残り打撃回数。奪った札は切替で上書き可能）
+    cpuQueue: [], // CPUの残り打撃回数分の手札ID
+    capturedByPlayer: [], // 奪って確保したメンコID一覧
     capturedByCpu: [],
     resultSummary: null,
   });
@@ -160,18 +156,15 @@ export default function FlamenkoGame() {
   const totalOwnedCount = Object.values(inventory).reduce((sum, c) => sum + (c > 0 ? c : 0), 0);
   const uniqueOwnedCount = Object.values(inventory).filter((c) => c > 0).length;
 
-  // ステージ順次解放判定関数（最初は1-1のみ解放、以降は直前のステージがクリア済みなら解放）
   const isStageUnlocked = useCallback(
     (stageId) => {
       const idx = ALL_STORY_STAGES.findIndex((s) => s.id === stageId);
       if (idx <= 0) return true;
-      const prevStage = ALL_STORY_STAGES[idx - 1];
-      return clearedStages.includes(prevStage.id);
+      return clearedStages.includes(ALL_STORY_STAGES[idx - 1].id);
     },
     [clearedStages]
   );
 
-  // 章解放判定（その章の最初のステージが解放されているか）
   const isChapterUnlocked = useCallback(
     (chNum) => {
       const chObj = STORY_CHAPTERS.find((c) => c.ch === chNum);
@@ -181,7 +174,6 @@ export default function FlamenkoGame() {
     [isStageUnlocked]
   );
 
-  // 初期ロード
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
@@ -200,7 +192,6 @@ export default function FlamenkoGame() {
           if (typeof parsed.wins === 'number') setWins(parsed.wins);
           if (Array.isArray(parsed.clearedStages)) {
             setClearedStages(parsed.clearedStages);
-            // 現在挑戦中の最新章を自動選択
             const nextStage = ALL_STORY_STAGES.find((s) => !parsed.clearedStages.includes(s.id));
             if (nextStage) {
               const chNum = Number(nextStage.id.split('-')[0]);
@@ -212,7 +203,6 @@ export default function FlamenkoGame() {
     }
   }, []);
 
-  // セーブ保存（0枚全滅時1枚救済込み）
   const saveProgress = useCallback((nextInv, nextCoins, nextWins, nextCleared) => {
     const cleaned = {};
     let total = 0;
@@ -240,7 +230,6 @@ export default function FlamenkoGame() {
     return cleaned;
   }, []);
 
-  // ストーリーステージ選択開始（未解放ステージはブロック）
   const startStoryStageSetup = (stage) => {
     if (!isStageUnlocked(stage.id)) return;
     setActiveStoryStage(stage);
@@ -251,7 +240,6 @@ export default function FlamenkoGame() {
     setScreen('select_hand');
   };
 
-  // フリー対戦手札選択開始
   const startFreeBattleSetup = () => {
     setActiveStoryStage(null);
     const mode = totalOwnedCount <= 1 ? 'single' : battleMode;
@@ -283,9 +271,23 @@ export default function FlamenkoGame() {
     setSelectedHand(selectedHand.filter((_, i) => i !== index));
   };
 
+  // 先攻・後攻決定画面へ進む（相手の持ちメンコからランダムor最弱をルーレット絵にセット）
   const proceedToTurnDecide = () => {
     const minReq = battleMode === 'single' ? 1 : 2;
     if (selectedHand.length < minReq) return;
+
+    const rival = CPU_RIVALS.find((r) => r.id === selectedRivalId) || CPU_RIVALS[0];
+    const poolIds = activeStoryStage ? activeStoryStage.enemyDeck : rival.deck;
+    const poolMenkos = poolIds.map((id) => MENKO_LIST.find((m) => m.id === id)).filter(Boolean);
+    // 複数ある場合は最弱またはランダムから選出
+    const sorted = [...poolMenkos].sort((a, b) => a.power - b.power);
+    const pickedEnemyMenko =
+      Math.random() < 0.5 && sorted.length > 0
+        ? sorted[0]
+        : poolMenkos[Math.floor(Math.random() * poolMenkos.length)] || MENKO_LIST[0];
+
+    setRouletteMenko(pickedEnemyMenko);
+    setRouletteFlipped(false);
     setTurnResultBanner(null);
     setRouletteSpinning(false);
     setRouletteDisplay('？');
@@ -300,12 +302,14 @@ export default function FlamenkoGame() {
     const iv = setInterval(() => {
       playSimpleSe('tick', muted);
       setRouletteDisplay(choices[tick % 3]);
+      setRouletteFlipped(tick % 2 === 1);
       tick++;
       if (tick > 14) {
         clearInterval(iv);
         const cpuIdx = Math.floor(Math.random() * 3);
         const cpuChoice = choices[cpuIdx];
         setRouletteDisplay(`相手: ${cpuChoice}`);
+        setRouletteFlipped(false);
         setRouletteSpinning(false);
 
         if (playerChoice === cpuIdx) {
@@ -330,15 +334,18 @@ export default function FlamenkoGame() {
   const playCoinChoice = (guessFront) => {
     if (rouletteSpinning) return;
     setRouletteSpinning(true);
-    const faces = ['🌞 表（キモカワ顔）', '🔥 裏（情熱ロゴ）'];
+    const faces = ['🌞 表（キャラ面）', '🔥 裏（情熱ロゴ）'];
     let tick = 0;
     const iv = setInterval(() => {
       playSimpleSe('tick', muted);
-      setRouletteDisplay(faces[tick % 2]);
+      const showBack = tick % 2 === 1;
+      setRouletteFlipped(showBack);
+      setRouletteDisplay(showBack ? faces[1] : faces[0]);
       tick++;
       if (tick > 15) {
         clearInterval(iv);
         const isFront = Math.random() < 0.5;
+        setRouletteFlipped(!isFront);
         setRouletteDisplay(isFront ? faces[0] : faces[1]);
         setRouletteSpinning(false);
 
@@ -361,11 +368,14 @@ export default function FlamenkoGame() {
     let tick = 0;
     const iv = setInterval(() => {
       playSimpleSe('tick', muted);
+      const isSecond = tick % 2 === 1;
+      setRouletteFlipped(isSecond);
       setRouletteDisplay(items[tick % 2]);
       tick++;
       if (tick > 18) {
         clearInterval(iv);
         const isPlayerFirst = Math.random() < 0.52;
+        setRouletteFlipped(!isPlayerFirst);
         setRouletteDisplay(isPlayerFirst ? items[0] : items[1]);
         setRouletteSpinning(false);
         playSimpleSe(isPlayerFirst ? 'get' : 'castanet', muted);
@@ -377,26 +387,31 @@ export default function FlamenkoGame() {
     }, 60);
   };
 
+  // 打撃ランク算出（タイミング精度ベース：真芯ならNメンコでも高ランクが出る）
   const calcSlamRank = (accuracyRatio, menko) => {
-    const rawScore = accuracyRatio * 8 + (menko.power / 100) * 2;
+    const rawScore = accuracyRatio * 9 + (menko.power / 150) * 1.2;
     const idx = Math.max(0, Math.min(9, Math.round(rawScore) - 1));
     return SLAM_RANKS[idx];
   };
 
+  // メンコ叩きつけ実行（会心の一撃＆2回目グラグラ蓄積システム搭載）
   const executeSlam = useCallback(
     (attackerOwner, menko, targetX, targetY, accuracyRatio, isCumulative) => {
       const rankObj = calcSlamRank(accuracyRatio, menko);
-      playSlamSe(rankObj, muted);
+      // 真芯（accuracyRatio >= 0.90）の時は42%の確率で「会心の一撃」発生！
+      const isCritical = accuracyRatio >= 0.90 && Math.random() < 0.42;
+
+      playSlamSe(rankObj, isCritical, muted);
       if (menko.castanet && rankObj.lv >= 6) {
         setTimeout(() => playSimpleSe('castanet', muted), 80);
       }
 
-      shakeRef.current = rankObj.shake;
+      shakeRef.current = isCritical ? 32 : rankObj.shake;
       onomatopoeiaRef.current = {
-        text: rankObj.text,
-        color: rankObj.color,
-        stroke: rankObj.stroke,
-        scale: rankObj.scale,
+        text: isCritical ? '💥会心！バチコーンッ！！' : rankObj.text,
+        color: isCritical ? '#fef08a' : rankObj.color,
+        stroke: isCritical ? '#991b1b' : rankObj.stroke,
+        scale: isCritical ? 2.0 : rankObj.scale,
         x: targetX,
         y: Math.max(65, targetY - 25),
         alpha: 1.0,
@@ -408,7 +423,7 @@ export default function FlamenkoGame() {
       const windMult = isHighWind ? 1.45 : 1.0;
 
       const windRadius =
-        (65 + menko.power * 0.5 + rankObj.lv * 5.5) * (1 + menko.skill.bonusWind) * windMult;
+        (62 + menko.power * 0.35 + rankObj.lv * 5.2) * (1 + menko.skill.bonusWind) * windMult;
 
       effectsRef.current.push({
         x: targetX,
@@ -416,11 +431,13 @@ export default function FlamenkoGame() {
         r: 12,
         maxR: windRadius,
         alpha: 1,
-        lv: rankObj.lv,
-        rose: menko.rose,
+        lv: isCritical ? 10 : rankObj.lv,
+        rose: menko.rose || isCritical,
       });
 
       const newlyFlippedMenkos = [];
+      let wobbledCount = 0;
+
       piecesRef.current.forEach((p) => {
         if (p.owner === attackerOwner || p.flipped) return;
         const dx = p.x - targetX;
@@ -429,22 +446,33 @@ export default function FlamenkoGame() {
 
         if (dist < windRadius) {
           const proximity = 1 - dist / windRadius;
+          const critMult = isCritical ? 3.4 : 1.0;
           const attackForce =
-            (menko.power * 0.65 + rankObj.lv * 6.5) *
+            (menko.power * 0.58 + rankObj.lv * 5.2) *
             (1 + menko.skill.bonusWind) *
             windMult *
+            critMult *
             (0.45 + proximity);
-          const defense = p.menko.weight * (1 + p.menko.skill.bonusWeight);
+
+          // 累積グラグラ度（looseness: 0〜0.75）に応じて防御力が低下（2回目・3回目で返りやすい）
+          const looseness = p.looseness || 0;
+          const effectiveDefense =
+            p.menko.weight * (1 + p.menko.skill.bonusWeight) * Math.max(0.25, 1 - looseness);
 
           const pushAngle = Math.atan2(dy || 1, dx || 1);
-          const pushSpeed = Math.max(2, (attackForce / Math.max(25, defense)) * 5.2);
+          const pushSpeed = Math.max(1.8, (attackForce / Math.max(25, effectiveDefense)) * 4.5);
           p.vx += Math.cos(pushAngle) * pushSpeed;
           p.vy += Math.sin(pushAngle) * pushSpeed;
 
-          if (attackForce > defense * 0.66 || (rankObj.lv >= 9 && proximity > 0.4)) {
+          if (attackForce >= effectiveDefense * 0.85 || (isCritical && proximity > 0.3)) {
             p.flipped = true;
             p.flipProgress = 0.05;
             newlyFlippedMenkos.push(p.menko);
+          } else {
+            // 1発で返らなくても風圧を当てれば「グラグラ蓄積」し、次の打撃で返りやすくなる！
+            p.looseness = Math.min(0.75, looseness + 0.32 + rankObj.lv * 0.02);
+            p.angle += (Math.random() > 0.5 ? 1 : -1) * 0.25;
+            wobbledCount += 1;
           }
         }
       });
@@ -462,15 +490,30 @@ export default function FlamenkoGame() {
           angle: (Math.random() - 0.5) * 0.35,
           flipped: false,
           flipProgress: 0,
+          looseness: 0,
         });
       }
 
-      return { rankObj, newlyFlippedMenkos };
+      return { rankObj, isCritical, newlyFlippedMenkos, wobbledCount };
     },
     [muted, activeStoryStage]
   );
 
-  // 試合終了＆リアル精算（クリア時は次章タブへ自動フォーカス）
+  // 奪ったメンコを次の打撃札として切り替える（総打撃回数は増やさない）
+  const switchNextHandToCaptured = (capturedMenkoId) => {
+    if (battleState.turn !== 'player' || battleState.playerQueue.length === 0) return;
+    playSimpleSe('castanet', muted);
+    const nextQ = [...battleState.playerQueue];
+    nextQ[0] = capturedMenkoId;
+    const m = MENKO_LIST.find((x) => x.id === capturedMenkoId);
+    setBattleState((prev) => ({
+      ...prev,
+      playerQueue: nextQ,
+      message: `⚡奪った「${m ? m.name : 'メンコ'}」に持ち替えた！これで打つで！`,
+    }));
+  };
+
+  // 試合終了＆リアル精算
   const concludeMatch = useCallback(
     (finalCapturedByPlayer, finalCapturedByCpu, isVictory) => {
       const rival = CPU_RIVALS.find((r) => r.id === selectedRivalId) || CPU_RIVALS[0];
@@ -499,7 +542,6 @@ export default function FlamenkoGame() {
               nextInv[bId] = (nextInv[bId] || 0) + 1;
               storyBonusMenko = MENKO_LIST.find((m) => m.id === bId);
             }
-            // 次のステージ解放案内
             const curIdx = ALL_STORY_STAGES.findIndex((s) => s.id === activeStoryStage.id);
             if (curIdx >= 0 && curIdx + 1 < ALL_STORY_STAGES.length) {
               const nextSt = ALL_STORY_STAGES[curIdx + 1];
@@ -537,8 +579,8 @@ export default function FlamenkoGame() {
         ...prev,
         turn: 'result',
         message: isVictory
-          ? `勝負あり！${finalCapturedByPlayer.length}枚ゲット＆賞金🪙${rewardCoins}！`
-          : `試合終了！獲得 ${finalCapturedByPlayer.length}枚 / 奪われ ${finalCapturedByCpu.length}枚`,
+          ? `勝利！確保 ${finalCapturedByPlayer.length}枚 vs 奪われ ${finalCapturedByCpu.length}枚（賞金🪙${rewardCoins}）`
+          : `敗北…確保 ${finalCapturedByPlayer.length}枚 vs 奪われ ${finalCapturedByCpu.length}枚`,
         resultSummary: {
           isVictory,
           captured: finalCapturedByPlayer.map((id) => MENKO_LIST.find((m) => m.id === id)).filter(Boolean),
@@ -583,6 +625,7 @@ export default function FlamenkoGame() {
             angle: 0,
             flipped: false,
             flipProgress: 0,
+            looseness: 0,
           });
         } else {
           if (nextCpuQueue.length > 0) {
@@ -595,14 +638,35 @@ export default function FlamenkoGame() {
           }
         }
 
-        const playerTargets = piecesRef.current.filter((p) => p.owner === 'player' && !p.flipped);
+        // 場にプレイヤーの標的が無い（累積で空になった）場合は自分の先頭札を1枚場に出す
+        let playerTargets = piecesRef.current.filter((p) => p.owner === 'player' && !p.flipped);
+        if (isCum && playerTargets.length === 0 && currentPlayerQueue.length > 0) {
+          const subPlyMenko = MENKO_LIST.find((m) => m.id === currentPlayerQueue[0]) || MENKO_LIST[0];
+          const newTarget = {
+            uid: `ply_sub_${Date.now()}`,
+            menko: subPlyMenko,
+            owner: 'player',
+            x: 170,
+            y: 170,
+            vx: 0,
+            vy: 0,
+            radius: 27,
+            angle: 0,
+            flipped: false,
+            flipProgress: 0,
+            looseness: 0,
+          };
+          piecesRef.current.push(newTarget);
+          playerTargets = [newTarget];
+        }
+
         const target =
           playerTargets.length > 0
             ? playerTargets[Math.floor(Math.random() * playerTargets.length)]
             : { x: 170, y: 170 };
 
-        const jitterX = (Math.random() - 0.5) * 32;
-        const jitterY = (Math.random() - 0.5) * 32;
+        const jitterX = (Math.random() - 0.5) * 34;
+        const jitterY = (Math.random() - 0.5) * 34;
         const cpuSlam = executeSlam(
           'cpu',
           cpuAttackMenko,
@@ -614,9 +678,6 @@ export default function FlamenkoGame() {
 
         const cpuFlippedIds = cpuSlam.newlyFlippedMenkos.map((m) => m.id);
         const nextCapturedByCpu = [...currentCapCpu, ...cpuFlippedIds];
-        if (isCum && cpuFlippedIds.length > 0) {
-          nextCpuQueue = [...nextCpuQueue, ...cpuFlippedIds];
-        }
 
         setTimeout(() => {
           if (!isCum) {
@@ -633,7 +694,9 @@ export default function FlamenkoGame() {
           message:
             cpuFlippedIds.length > 0
               ? `相手の${cpuSlam.rankObj.text} ${cpuFlippedIds.length}枚奪われた！`
-              : `相手の${cpuSlam.rankObj.text} 耐えきった！`,
+              : cpuSlam.wobbledCount > 0
+              ? `相手の${cpuSlam.rankObj.text} 耐えたがグラグラになった！`
+              : `相手の${cpuSlam.rankObj.text} ビクともせえへん！`,
         }));
 
         setTimeout(() => {
@@ -641,10 +704,37 @@ export default function FlamenkoGame() {
             concludeMatch(currentCapPly, nextCapturedByCpu, false);
             return;
           }
-          if (isCum && currentPlayerQueue.length === 0) {
-            const isWin = currentCapPly.length >= nextCapturedByCpu.length;
+
+          // 累積バトル：お互いの手札回数をすべて打ち終えたら最終決着！
+          if (isCum && currentPlayerQueue.length === 0 && nextCpuQueue.length === 0) {
+            const plyRemainOnField = piecesRef.current.filter((p) => p.owner === 'player' && !p.flipped).length;
+            const cpuRemainOnField = piecesRef.current.filter((p) => p.owner === 'cpu' && !p.flipped).length;
+            const isWin =
+              currentCapPly.length > nextCapturedByCpu.length ||
+              (currentCapPly.length === nextCapturedByCpu.length && plyRemainOnField >= cpuRemainOnField);
             concludeMatch(currentCapPly, nextCapturedByCpu, isWin);
             return;
+          }
+
+          // 場に相手のメンコが0枚なら補充してプレイヤーのターンへ
+          const cpuOnFieldNow = piecesRef.current.filter((p) => p.owner === 'cpu' && !p.flipped).length;
+          if (isCum && cpuOnFieldNow === 0 && currentPlayerQueue.length > 0) {
+            const subId = nextCpuQueue.length > 0 ? nextCpuQueue[0] : rival.deck[0];
+            const subM = MENKO_LIST.find((m) => m.id === subId) || MENKO_LIST[0];
+            piecesRef.current.push({
+              uid: `cpu_refill_${Date.now()}`,
+              menko: subM,
+              owner: 'cpu',
+              x: 170,
+              y: 145,
+              vx: 0,
+              vy: 0,
+              radius: 27,
+              angle: 0,
+              flipped: false,
+              flipProgress: 0,
+              looseness: 0,
+            });
           }
 
           if (
@@ -670,6 +760,7 @@ export default function FlamenkoGame() {
                 angle: 0.25,
                 flipped: false,
                 flipProgress: 0,
+                looseness: 0,
               });
               playSimpleSe('get', muted);
               setBattleState((prev) => ({
@@ -685,7 +776,7 @@ export default function FlamenkoGame() {
             ...prev,
             turn: 'player',
             message: isCum
-              ? `お前のターン！（残り手札 ${currentPlayerQueue.length}枚）`
+              ? `お前のターン！（残り打撃 ${currentPlayerQueue.length}回）`
               : 'お前のターンや！狙いをつけて叩きつけろ！',
           }));
         }, 1100);
@@ -694,7 +785,7 @@ export default function FlamenkoGame() {
     [selectedRivalId, executeSlam, concludeMatch, activeStoryStage, muted]
   );
 
-  // 先攻後攻確定後にバトル実戦開始
+  // 先攻後攻確定後にバトル開始
   const launchBattleWithTurn = (firstTurn) => {
     const rival = CPU_RIVALS.find((r) => r.id === selectedRivalId) || CPU_RIVALS[0];
     const initialPieces = [];
@@ -716,28 +807,31 @@ export default function FlamenkoGame() {
         angle: 0,
         flipped: false,
         flipProgress: 0,
+        looseness: 0,
       });
     } else {
-      const fullEnemyDeck = [...enemyPool, ...rival.deck].slice(0, selectedHand.length);
-      const fieldCount = Math.min(3, fullEnemyDeck.length);
+      // 累積バトル：お互い同じ回数（selectedHand.length回）打てるようにセット
+      const fullEnemyDeck = [...enemyPool, ...rival.deck, ...enemyPool].slice(0, selectedHand.length);
+      const fieldCount = Math.min(2, fullEnemyDeck.length);
       const onField = fullEnemyDeck.slice(0, fieldCount);
-      cpuRemainingQueue = fullEnemyDeck.slice(fieldCount);
+      cpuRemainingQueue = fullEnemyDeck; // 相手もselectedHand.length回打つ
 
       onField.forEach((mId, idx) => {
         const menko = MENKO_LIST.find((m) => m.id === mId) || MENKO_LIST[0];
-        const offsetX = fieldCount === 1 ? 170 : fieldCount === 2 ? 130 + idx * 80 : 105 + idx * 65;
+        const offsetX = fieldCount === 1 ? 170 : 125 + idx * 90;
         initialPieces.push({
           uid: `cpu_cum_${idx}_${Date.now()}`,
           menko,
           owner: 'cpu',
           x: offsetX,
-          y: 145 + (idx % 2) * 24,
+          y: 145 + (idx % 2) * 20,
           vx: 0,
           vy: 0,
           radius: 27,
-          angle: (idx - 1) * 0.12,
+          angle: (idx - 0.5) * 0.1,
           flipped: false,
           flipProgress: 0,
+          looseness: 0,
         });
       });
     }
@@ -773,7 +867,6 @@ export default function FlamenkoGame() {
     }
   };
 
-  // パワーゲージ往復タイマー
   useEffect(() => {
     if (screen !== 'battle' || battleState.turn !== 'player') return;
     const timer = setInterval(() => {
@@ -811,7 +904,7 @@ export default function FlamenkoGame() {
       ? Math.max(45, Math.min(295, battleState.aimX + Math.sin(wobblePhaseRef.current) * 32))
       : battleState.aimX;
 
-    const { rankObj, newlyFlippedMenkos } = executeSlam(
+    const { rankObj, isCritical, newlyFlippedMenkos, wobbledCount } = executeSlam(
       'player',
       menko,
       actualAimX,
@@ -821,14 +914,15 @@ export default function FlamenkoGame() {
     );
 
     const flippedIds = newlyFlippedMenkos.map((m) => m.id);
-    const remainingAfterUse = isCum ? battleState.playerQueue.slice(1) : [...battleState.playerQueue];
-    const nextPlayerQueue = isCum ? [...remainingAfterUse, ...flippedIds] : remainingAfterUse;
+    // 累積バトルでは残り打撃回数を1消費（無限増殖させない）
+    const nextPlayerQueue = isCum ? battleState.playerQueue.slice(1) : [...battleState.playerQueue];
     const nextCapturedByPlayer = [...battleState.capturedByPlayer, ...flippedIds];
 
     setTimeout(() => {
       piecesRef.current = piecesRef.current.filter((p) => !p.flipped);
     }, 650);
 
+    const hitPrefix = isCritical ? '💥会心の一撃！！' : rankObj.text;
     setBattleState((prev) => ({
       ...prev,
       turn: 'animating',
@@ -836,56 +930,62 @@ export default function FlamenkoGame() {
       capturedByPlayer: nextCapturedByPlayer,
       message:
         flippedIds.length > 0
-          ? `${rankObj.text} ${flippedIds.length}枚ひっくり返してゲットだぜ！`
-          : `${rankObj.text} 惜しい！まだ返らへん！`,
+          ? `${hitPrefix} ${flippedIds.length}枚ひっくり返してゲットだぜ！`
+          : wobbledCount > 0
+          ? `${hitPrefix} 浮き上がった！「グラグラ！」次で返せるぞ！`
+          : `${hitPrefix} 重くてビクともせえへん！`,
     }));
 
     setTimeout(() => {
       const cpuOnFieldCount = piecesRef.current.filter((p) => p.owner === 'cpu' && !p.flipped).length;
 
+      // 1枚タイマンは相手を返した瞬間に即勝利
       if (!isCum && cpuOnFieldCount === 0) {
         concludeMatch(nextCapturedByPlayer, battleState.capturedByCpu, true);
         return;
       }
 
-      if (isCum && cpuOnFieldCount === 0) {
-        if (battleState.cpuQueue.length > 0) {
-          const nextCpuId = battleState.cpuQueue[0];
-          const nextCpuMenko = MENKO_LIST.find((m) => m.id === nextCpuId) || MENKO_LIST[0];
-          piecesRef.current.push({
-            uid: `cpu_sub_${Date.now()}`,
-            menko: nextCpuMenko,
-            owner: 'cpu',
-            x: 170,
-            y: 150,
-            vx: 0,
-            vy: 0,
-            radius: 27,
-            angle: 0,
-            flipped: false,
-            flipProgress: 0,
-          });
-          const subCpuQ = battleState.cpuQueue.slice(1);
-          setBattleState((prev) => ({ ...prev, cpuQueue: subCpuQ }));
-          runCpuTurn(isCum, nextPlayerQueue, subCpuQ, nextCapturedByPlayer, battleState.capturedByCpu);
-          return;
-        } else {
-          concludeMatch(nextCapturedByPlayer, battleState.capturedByCpu, true);
-          return;
-        }
-      }
-
+      // 累積バトル：お互いの打撃回数が0になったら決着
       if (isCum && nextPlayerQueue.length === 0 && battleState.cpuQueue.length === 0) {
-        const isWin = nextCapturedByPlayer.length >= battleState.capturedByCpu.length;
+        const plyRemainOnField = piecesRef.current.filter((p) => p.owner === 'player' && !p.flipped).length;
+        const cpuRemainOnField = piecesRef.current.filter((p) => p.owner === 'cpu' && !p.flipped).length;
+        const isWin =
+          nextCapturedByPlayer.length > battleState.capturedByCpu.length ||
+          (nextCapturedByPlayer.length === battleState.capturedByCpu.length && plyRemainOnField >= cpuRemainOnField);
         concludeMatch(nextCapturedByPlayer, battleState.capturedByCpu, isWin);
         return;
+      }
+
+      // 累積バトルで場が空になった場合は相手が補充して続行（先攻即終了を防止）
+      if (isCum && cpuOnFieldCount === 0) {
+        const rival = CPU_RIVALS.find((r) => r.id === selectedRivalId) || CPU_RIVALS[0];
+        const enemyPool = activeStoryStage ? activeStoryStage.enemyDeck : rival.deck;
+        const refillId =
+          battleState.cpuQueue.length > 0
+            ? battleState.cpuQueue[0]
+            : enemyPool[Math.floor(Math.random() * enemyPool.length)];
+        const refillMenko = MENKO_LIST.find((m) => m.id === refillId) || MENKO_LIST[0];
+        piecesRef.current.push({
+          uid: `cpu_sub_${Date.now()}`,
+          menko: refillMenko,
+          owner: 'cpu',
+          x: 170,
+          y: 145,
+          vx: 0,
+          vy: 0,
+          radius: 27,
+          angle: 0,
+          flipped: false,
+          flipProgress: 0,
+          looseness: 0,
+        });
       }
 
       runCpuTurn(isCum, nextPlayerQueue, battleState.cpuQueue, nextCapturedByPlayer, battleState.capturedByCpu);
     }, 1250);
   };
 
-  // Canvasアニメーションループ
+  // Canvasアニメーションループ（「グラグラ！」状態表示込み）
   useEffect(() => {
     if (screen !== 'battle') return;
     const canvas = canvasRef.current;
@@ -942,7 +1042,23 @@ export default function FlamenkoGame() {
           p.flipProgress = Math.min(1, p.flipProgress + 0.08);
         }
 
-        drawMenkoCanvas(ctx, p);
+        // グラグラ蓄積中は小刻みに震える描画
+        const drawPiece =
+          !p.flipped && (p.looseness || 0) > 0
+            ? { ...p, x: p.x + Math.sin(wobblePhaseRef.current * 4) * 2.2 }
+            : p;
+
+        drawMenkoCanvas(ctx, drawPiece);
+
+        // グラグラ状態バッジ表示
+        if (!p.flipped && (p.looseness || 0) > 0) {
+          ctx.save();
+          ctx.fillStyle = '#dc2626';
+          ctx.font = '900 10px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('グラグラ!', p.x, p.y - p.radius - 6);
+          ctx.restore();
+        }
       });
 
       effectsRef.current = effectsRef.current.filter((ef) => ef.alpha > 0.03);
@@ -976,7 +1092,7 @@ export default function FlamenkoGame() {
         ctx.globalAlpha = ono.alpha;
         ctx.translate(W / 2, ono.y);
         ctx.rotate(-0.08);
-        const fontSize = Math.round(22 * ono.scale);
+        const fontSize = Math.round(20 * ono.scale);
         ctx.font = `900 ${fontSize}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -1035,7 +1151,6 @@ export default function FlamenkoGame() {
     setBattleState((prev) => ({ ...prev, aimX: x, aimY: y }));
   };
 
-  // 駄菓子屋くじガチャ
   const pullGacha = () => {
     if (coins < 100) return;
     playSimpleSe('castanet', muted);
@@ -1078,7 +1193,6 @@ export default function FlamenkoGame() {
 
   return (
     <div style={{ maxWidth: '460px', margin: '0 auto', padding: '10px 8px 28px' }}>
-      {/* 携帯ゲーム機風ベゼルフレーム */}
       <div
         style={{
           backgroundColor: '#e2e8f0',
@@ -1173,7 +1287,6 @@ export default function FlamenkoGame() {
           {/* ================= ホーム画面 ================= */}
           {screen === 'home' && (
             <div style={{ padding: '12px' }}>
-              {/* プロローグ物語カード */}
               <div
                 style={{
                   backgroundColor: '#fff7ed',
@@ -1191,13 +1304,12 @@ export default function FlamenkoGame() {
                 </div>
                 <div style={{ fontSize: '11.5px', color: '#431407' }}>
                   <div style={{ fontWeight: '900', color: '#c2410c', marginBottom: '2px' }}>
-                    1-1から順番に勝ち上がれ！情熱メンコ道！
+                    真芯の会心＆2回目返しで下剋上！
                   </div>
-                  ステージを1つずつクリアして次の強敵を解放！キモカワ動物メンコを「ゲットだぜ！」
+                  重い角メンも2発当てて「グラグラ！」にすれば裏返る！真芯なら「会心の一撃」で一発逆転や！
                 </div>
               </div>
 
-              {/* モード切替タブ（ストーリー vs フリー対戦） */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '10px' }}>
                 <button
                   onClick={() => setHomeTab('story')}
@@ -1229,10 +1341,8 @@ export default function FlamenkoGame() {
                 </button>
               </div>
 
-              {/* ストーリーモードUI（順次解放方式） */}
               {homeTab === 'story' ? (
                 <div style={{ marginBottom: '10px' }}>
-                  {/* 5章アイコンタブ */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px', marginBottom: '8px' }}>
                     {STORY_CHAPTERS.map((c) => {
                       const chUnlocked = isChapterUnlocked(c.ch);
@@ -1261,7 +1371,6 @@ export default function FlamenkoGame() {
                     })}
                   </div>
 
-                  {/* 選択中の章バナー */}
                   <div
                     style={{
                       backgroundColor: '#fef2f2',
@@ -1279,7 +1388,6 @@ export default function FlamenkoGame() {
                     </div>
                   </div>
 
-                  {/* 章内3ステージ一覧（未解放はロック表示） */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                     {currentChapterObj.stages.map((st) => {
                       const unlocked = isStageUnlocked(st.id);
@@ -1333,7 +1441,7 @@ export default function FlamenkoGame() {
                             </div>
                             <div style={{ fontSize: '10.5px', color: '#475569', marginTop: '1px' }}>{st.desc}</div>
                             <div style={{ fontSize: '10px', fontWeight: '800', color: '#d97706', marginTop: '2px' }}>
-                              ルール: {st.mode === 'single' ? '1枚タイマン' : `累積(${st.handLimit}枚)`} / 報酬: 🪙{st.rewardCoins}
+                              ルール: {st.mode === 'single' ? '1枚タイマン' : `累積(${st.handLimit}回)`} / 報酬: 🪙{st.rewardCoins}
                               {!isCleared && bonusM ? ` ＋ 初回「${bonusM.name}」` : ''}
                             </div>
                           </div>
@@ -1358,7 +1466,6 @@ export default function FlamenkoGame() {
                   </div>
                 </div>
               ) : (
-                /* フリー対戦UI */
                 <div style={{ marginBottom: '10px' }}>
                   <div style={{ fontSize: '12px', fontWeight: '900', marginBottom: '5px' }}>⚔️ ルール選択</div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '10px' }}>
@@ -1398,7 +1505,7 @@ export default function FlamenkoGame() {
                     >
                       <div style={{ fontSize: '12px', fontWeight: '900' }}>🎴 累積バトル</div>
                       <div style={{ fontSize: '10px' }}>
-                        {totalOwnedCount <= 1 ? '所持2枚以上で解放' : '手札2〜5枚・現地調達'}
+                        {totalOwnedCount <= 1 ? '所持2枚以上で解放' : '手札2〜5回・奪い合い'}
                       </div>
                     </button>
                   </div>
@@ -1459,7 +1566,6 @@ export default function FlamenkoGame() {
                 </div>
               )}
 
-              {/* サブメニュー（ガチャ・図鑑・LINEシェア） */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
                 <button
                   onClick={() => {
@@ -1525,7 +1631,7 @@ export default function FlamenkoGame() {
                 </div>
               )}
               <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '8px' }}>
-                ※負けて裏返されると相手に奪われるで！よく選んでな！
+                ※選んだ枚数分だけ打てるで！負けて裏返されると相手に奪われるぞ！
               </div>
 
               <div
@@ -1560,7 +1666,7 @@ export default function FlamenkoGame() {
                           }}
                         >
                           <MenkoSVG menko={m} size={44} />
-                          <div style={{ fontSize: '9px', fontWeight: '900' }}>{idx + 1}番手</div>
+                          <div style={{ fontSize: '9px', fontWeight: '900' }}>{idx + 1}手目</div>
                         </button>
                       );
                     })
@@ -1637,14 +1743,14 @@ export default function FlamenkoGame() {
             </div>
           )}
 
-          {/* ================= 先攻・後攻決定画面 ================= */}
+          {/* ================= 先攻・後攻決定画面（相手メンコ絵付きルーレット） ================= */}
           {screen === 'turn_decide' && (
             <div style={{ padding: '14px', textAlign: 'center' }}>
               <div style={{ fontSize: '16px', fontWeight: '900', color: '#dc2626', marginBottom: '4px' }}>
                 🎲 先攻・後攻を決めろ！
               </div>
               <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '10px' }}>
-                決め方を「選択方式」か「自動ルーレット方式」から選んでな！
+                相手の持ちメンコ「{rouletteMenko ? rouletteMenko.name : ''}」で先攻勝負や！
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '5px', marginBottom: '12px' }}>
@@ -1653,6 +1759,7 @@ export default function FlamenkoGame() {
                   onClick={() => {
                     setTurnDecideType('rps');
                     setTurnResultBanner(null);
+                    setRouletteFlipped(false);
                     setRouletteDisplay('？');
                   }}
                   style={{
@@ -1671,6 +1778,7 @@ export default function FlamenkoGame() {
                   onClick={() => {
                     setTurnDecideType('coin');
                     setTurnResultBanner(null);
+                    setRouletteFlipped(false);
                     setRouletteDisplay('？');
                   }}
                   style={{
@@ -1689,6 +1797,7 @@ export default function FlamenkoGame() {
                   onClick={() => {
                     setTurnDecideType('roulette');
                     setTurnResultBanner(null);
+                    setRouletteFlipped(false);
                     setRouletteDisplay('？');
                   }}
                   style={{
@@ -1700,23 +1809,34 @@ export default function FlamenkoGame() {
                     color: turnDecideType === 'roulette' ? '#fff' : '#334155',
                   }}
                 >
-                  🎰 おまかせルーレット
+                  🎰 自動ルーレット
                 </button>
               </div>
 
+              {/* 相手メンコの絵が表裏回転するルーレットモニター */}
               <div
                 style={{
                   backgroundColor: '#1e293b',
                   color: '#fef08a',
                   border: '3px solid #f59e0b',
                   borderRadius: '14px',
-                  padding: '20px 10px',
+                  padding: '14px 10px',
                   marginBottom: '12px',
-                  fontSize: '20px',
-                  fontWeight: '900',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '6px',
                 }}
               >
-                {rouletteDisplay}
+                <div
+                  style={{
+                    transform: rouletteSpinning ? 'scale(1.06)' : 'scale(1)',
+                    transition: 'transform 0.1s',
+                  }}
+                >
+                  <MenkoSVG menko={rouletteMenko} size={88} flipped={rouletteFlipped} />
+                </div>
+                <div style={{ fontSize: '18px', fontWeight: '900' }}>{rouletteDisplay}</div>
               </div>
 
               {(!turnResultBanner || turnResultBanner.first === null) && (
@@ -1754,14 +1874,14 @@ export default function FlamenkoGame() {
                         onClick={() => playCoinChoice(true)}
                         style={{ backgroundColor: '#ea580c', color: '#fff', fontSize: '14px', fontWeight: '900', padding: '12px', borderRadius: '10px' }}
                       >
-                        🌞 「表」に賭ける！
+                        🌞 「表（顔面）」に賭ける！
                       </button>
                       <button
                         disabled={rouletteSpinning}
                         onClick={() => playCoinChoice(false)}
                         style={{ backgroundColor: '#991b1b', color: '#fef08a', fontSize: '14px', fontWeight: '900', padding: '12px', borderRadius: '10px' }}
                       >
-                        🔥 「裏」に賭ける！
+                        🔥 「裏（情熱）」に賭ける！
                       </button>
                     </div>
                   )}
@@ -1781,7 +1901,7 @@ export default function FlamenkoGame() {
                         boxShadow: '0 4px 0 #7f1d1d',
                       }}
                     >
-                      🎰 情熱ルーレットを回す！
+                      🎰 メンコルーレットを回す！
                     </button>
                   )}
                 </div>
@@ -1840,6 +1960,7 @@ export default function FlamenkoGame() {
                 {battleState.message}
               </div>
 
+              {/* 打つ札＆確保スコア表示 */}
               <div
                 style={{
                   display: 'flex',
@@ -1856,12 +1977,65 @@ export default function FlamenkoGame() {
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   {currentHandMenko && <MenkoSVG menko={currentHandMenko} size={32} />}
-                  <span>
-                    打つ札: {currentHandMenko ? currentHandMenko.name : 'なし'} (残{battleState.playerQueue.length}枚)
-                  </span>
+                  <div>
+                    <div>
+                      打つ札: {currentHandMenko ? `${currentHandMenko.name} (攻${currentHandMenko.power})` : 'なし'}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#b45309' }}>
+                      残り打撃回数: {battleState.playerQueue.length}回
+                    </div>
+                  </div>
                 </div>
-                <span style={{ color: '#16a34a' }}>確保: {battleState.capturedByPlayer.length}枚</span>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ color: '#16a34a' }}>確保: {battleState.capturedByPlayer.length}枚</div>
+                  <div style={{ color: '#dc2626', fontSize: '10px' }}>奪われ: {battleState.capturedByCpu.length}枚</div>
+                </div>
               </div>
+
+              {/* 累積バトル用：奪ったメンコをその場で切り替えて使うバー */}
+              {battleMode === 'cumulative' &&
+                battleState.turn === 'player' &&
+                battleState.capturedByPlayer.length > 0 && (
+                  <div
+                    style={{
+                      backgroundColor: '#f0fdf4',
+                      border: '1.5px solid #22c55e',
+                      borderRadius: '8px',
+                      padding: '4px 8px',
+                      marginBottom: '6px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      overflowX: 'auto',
+                    }}
+                  >
+                    <span style={{ fontSize: '10px', fontWeight: '900', color: '#15803d', flexShrink: 0 }}>
+                      ⚡奪った札に切替:
+                    </span>
+                    {Array.from(new Set(battleState.capturedByPlayer)).map((capId) => {
+                      const cm = MENKO_LIST.find((m) => m.id === capId);
+                      if (!cm) return null;
+                      return (
+                        <button
+                          key={capId}
+                          onClick={() => switchNextHandToCaptured(capId)}
+                          style={{
+                            flexShrink: 0,
+                            backgroundColor: '#ffffff',
+                            border: '1.5px solid #16a34a',
+                            borderRadius: '6px',
+                            padding: '2px 6px',
+                            fontSize: '10px',
+                            fontWeight: '900',
+                            color: '#166534',
+                          }}
+                        >
+                          {cm.name}(攻{cm.power})
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
               <div style={{ position: 'relative', textAlign: 'center', marginBottom: '8px' }}>
                 <canvas
@@ -1912,7 +2086,7 @@ export default function FlamenkoGame() {
               {battleState.turn !== 'result' ? (
                 <div>
                   <div style={{ fontSize: '11px', fontWeight: '900', marginBottom: '3px', display: 'flex', justifyContent: 'space-between' }}>
-                    <span>情熱タイミング（赤芯で「バチコーンッ！！」炸裂）</span>
+                    <span>情熱タイミング（赤芯で「会心の一撃」チャンス！）</span>
                     <span>{Math.round(battleState.gaugeVal)}%</span>
                   </div>
                   <div
@@ -2334,9 +2508,9 @@ export default function FlamenkoGame() {
               🔥 情熱のフラ・メンコ 遊び方
             </div>
             <ul style={{ fontSize: '12px', paddingLeft: '18px', lineHeight: '1.7', marginBottom: '12px' }}>
-              <li><b>① 1-1から順次攻略</b>：ストーリーは1ステージずつクリアすることで次の相手や章が解放されるで！</li>
-              <li><b>② 先攻・後攻決定</b>：ジャンケン・表裏予想の「選択方式」か「おまかせルーレット」で先攻を奪え！</li>
-              <li><b>③ 奪い合い＆現地調達</b>：1枚タイマンは勝てば即「ゲットだぜ！」。累積バトルは途中で奪ったメンコが即手札に入りその場で使えるで！</li>
+              <li><b>① 会心の一撃＆2回目返し</b>：重い角メンも1回風圧を当てると「グラグラ！」状態になり、2回目で返せるぞ！真芯なら「会心の一撃」で一発逆転！</li>
+              <li><b>② 累積バトルの決着</b>：選んだ手札の回数分（2〜5回）打ち合い、終了時点で確保枚数が多い方が勝ち！途中で奪った札に切り替えて打つこともできるで！</li>
+              <li><b>③ 1-1から順次攻略</b>：ステージをクリアするごとに次の相手が解放！</li>
             </ul>
             <button
               onClick={() => setShowHelp(false)}
